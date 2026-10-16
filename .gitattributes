@@ -1,0 +1,4 @@
+# The plugin is written on Windows and read on everything; keep the stored form
+# LF so a checkout on either platform produces the same bytes.
+* text=auto eol=lf
+*.svg text

@@ -1,0 +1,72 @@
+{
+  "name": "dsh-model-cognition",
+  "version": "0.1.0",
+  "description": "Call other models from inside a DeepSeek Harness conversation: bring your own provider keys, consult, compare and orchestrate several models, with a settings panel in the Desktop app.",
+  "type": "module",
+  "main": "./host/index.js",
+  "icon": "./icon.svg",
+  "exports": {
+    ".": "./host/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "host",
+    "client",
+    "skills",
+    "test",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "multi-model",
+    "model-delegation",
+    "openai",
+    "anthropic"
+  ],
+  "license": "MIT",
+  "author": "Badplume",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Badplume/dsh-model-cognition.git"
+  },
+  "homepage": "https://github.com/Badplume/dsh-model-cognition#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "engines": {
+      "dsh": ">=0.1.7"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings-general"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node test/self-test.mjs"
+  }
+}

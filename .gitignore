@@ -1,0 +1,23 @@
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Never commit anything that could hold a key or a real usage ledger
+*.key
+.env
+.env.*
+store.json
+store.json.corrupt-*
+.credentials.yaml
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# Scratch space used while probing the Harness installation
+_probe/
+*.local.*

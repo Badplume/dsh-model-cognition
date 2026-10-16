@@ -1,0 +1,23 @@
+# dsh-model-cognition — call other models from inside a Harness conversation.
+#
+# One row carries both halves: the Host half (provider registry, credentials,
+# HTTP adapters, the four agent tools, and the plugin's own skill provider) and
+# the Client half (the settings panel), which find each other by this entry id.
+#
+# `config` seeds the plugin's own data file the first time it is opened. After
+# that the file is the single source of truth for the panel and the tools alike,
+# so editing these values later changes nothing that already exists — open
+# 设置 → Model Cognition instead. They are only read when no data file is present.
+- insert:
+    - id: model-cognition
+      name: 'dsh-model-cognition'
+      config:
+        defaultModel: ''
+        temperature: 0.7
+        maxTokens: 2048
+        timeoutMs: 120000
+        concurrency: 4
+        maxCostPerCallUsd: 0.5
+        maxCostPerDayUsd: 5
+        autoApproveUnderUsd: 0.05
+        includeUsageInPrompt: true

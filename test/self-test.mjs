@@ -293,6 +293,39 @@ try {
   const wrongVerb = await fetch(`${base}/settings`, { method: 'DELETE', headers: { host: `127.0.0.1:${panelServer.address().port}` } })
   check('a wrong verb is 405', wrongVerb.status === 405, String(wrongVerb.status))
 
+  // The panel tests a row before it is saved, so this route must accept a draft
+  // that is not in the store at all.
+  const post = (path, payload) => fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { host: `127.0.0.1:${panelServer.address().port}`, 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  const draft = await post('/test', {
+    provider: { id: 'draft', label: '草稿', protocol: 'openai', baseUrl: vendorUrl, keyMode: 'inline', apiKey: 'sk-draft' },
+  })
+  check('POST /test accepts an unsaved row', draft.status === 200, String(draft.status))
+  const draftBody = await draft.json()
+  check('POST /test reaches the vendor', draftBody.ok === true && draftBody.count >= 2, JSON.stringify(draftBody))
+  check('POST /test lists the models', draftBody.models.some((m) => m.id === 'mock-large'), JSON.stringify(draftBody.models))
+  check('POST /test never echoes the key', !JSON.stringify(draftBody).includes('sk-draft'))
+
+  const unreachable = await post('/test', {
+    provider: { id: 'draft', label: '草稿', protocol: 'openai', baseUrl: 'http://127.0.0.1:9/v1', keyMode: 'inline', apiKey: 'sk-x' },
+  })
+  const unreachableBody = await unreachable.json()
+  check('POST /test reports a dead endpoint as a result, not a throw',
+    unreachable.status === 200 && unreachableBody.ok === false && typeof unreachableBody.error === 'string',
+    JSON.stringify(unreachableBody))
+
+  const badDraft = await post('/test', { provider: { id: 'draft', protocol: 'telepathy', baseUrl: vendorUrl } })
+  check('POST /test refuses an unknown protocol', badDraft.status === 400, String(badDraft.status))
+
+  const exported = await get('/export')
+  check('GET /export answers', exported.status === 200, String(exported.status))
+  check('GET /export carries the providers', Array.isArray(exported.body.providers) && exported.body.providers.length > 0)
+  check('GET /export leaves every secret behind', !JSON.stringify(exported.body).includes('sk-'))
+
   panelServer.close()
 } finally {
   vendor.close()

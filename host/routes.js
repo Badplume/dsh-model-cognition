@@ -305,6 +305,57 @@ export function createHandler(ctx, store) {
         return
       }
 
+      if (head === 'test' && segments.length === 1) {
+        if (method !== 'POST') return methodRefused(res, ['POST'])
+        const body = await readJson(req)
+        // The panel tests a provider that has not been saved yet, so the row
+        // arrives in the body. The key may be the one being typed (never stored)
+        // or the one already configured for that id.
+        const draft = body.provider
+        if (draft === null || typeof draft !== 'object') {
+          sendJson(res, 400, { error: '缺少 provider' })
+          return
+        }
+        // Refuse an unknown protocol instead of quietly testing something else:
+        // a silent fallback would surface as a confusing vendor error.
+        if (draft.protocol !== undefined && !PROTOCOLS.includes(draft.protocol)) {
+          sendJson(res, 400, { error: `不支持的协议 ${draft.protocol}` })
+          return
+        }
+        if (draft.keyMode !== undefined && !KEY_MODES.includes(draft.keyMode)) {
+          sendJson(res, 400, { error: `不支持的密钥模式 ${draft.keyMode}` })
+          return
+        }
+        const candidate = {
+          id: typeof draft.id === 'string' && draft.id !== '' ? draft.id : 'draft',
+          label: draft.label ?? 'draft',
+          protocol: PROTOCOLS.includes(draft.protocol) ? draft.protocol : 'openai',
+          baseUrl: draft.baseUrl ?? '',
+          keyless: draft.keyless === true,
+          keyMode: KEY_MODES.includes(draft.keyMode) ? draft.keyMode : 'record',
+          apiKey: typeof draft.apiKey === 'string' ? draft.apiKey : '',
+          extraHeaders: draft.extraHeaders ?? {},
+        }
+        // The key may arrive beside the row (`apiKey`) or inside it; the panel
+        // sends it beside, and accepting both keeps the route usable by hand.
+        const supplied = typeof body.apiKey === 'string' ? body.apiKey.trim() : ''
+        let apiKey = supplied === '' ? candidate.apiKey : supplied
+        if (apiKey === '' && !candidate.keyless && candidate.id !== 'draft') {
+          apiKey = await readProviderKey(ctx, store.provider(candidate.id) ?? candidate)
+        }
+        try {
+          const models = await listModels(ctx, { provider: candidate, apiKey, timeoutMs: Number(store.settings.timeoutMs) })
+          sendJson(res, 200, { ok: true, models, count: models.length })
+        } catch (error) {
+          sendJson(res, 200, {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+            code: error?.code ?? 'error',
+          })
+        }
+        return
+      }
+
       if (head === 'export' && segments.length === 1) {
         if (method !== 'GET') return methodRefused(res, ['GET'])
         sendJson(res, 200, store.exportable())

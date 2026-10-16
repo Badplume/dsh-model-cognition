@@ -478,6 +478,14 @@ try {
   check('GET /export answers', exported.status === 200, String(exported.status))
   check('GET /export carries the providers', Array.isArray(exported.body.providers) && exported.body.providers.length > 0)
   check('GET /export leaves every secret behind', !JSON.stringify(exported.body).includes('sk-'))
+  // A backup that dropped the ledger or the pending approvals would not be one.
+  check('GET /export carries the usage ledger',
+    exported.body.usage !== null && typeof exported.body.usage === 'object'
+    && Array.isArray(exported.body.usage.records) && exported.body.usage.records.length > 0
+    && typeof exported.body.usage.totals?.calls === 'number',
+    JSON.stringify(exported.body.usage?.totals))
+  check('GET /export carries the approvals', Array.isArray(exported.body.approvals))
+  check('GET /export carries the settings', exported.body.settings !== null && typeof exported.body.settings === 'object')
 
   panelServer.close()
 

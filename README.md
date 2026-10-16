@@ -191,7 +191,8 @@ app and a `dsh web` session can both be open. Each process re-reads the document
 before it writes, so a save in one window cannot delete a provider added in the
 other.
 
-`GET /model-cognition/export` returns everything except keys, for a backup.
+`GET /model-cognition/export` returns the whole document except keys —
+settings, providers, the usage ledger and the pending approvals — for a backup.
 
 ## Security
 

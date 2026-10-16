@@ -512,13 +512,20 @@ export class Store {
     }, 0)
   }
 
-  /** The document without secret bytes, for export and for the panel's state. */
+  /**
+   * The whole document without secret bytes, for `GET /model-cognition/export`.
+   * A backup that quietly dropped the ledger or the pending approvals would not
+   * be a backup, so everything except the keys is here.
+   */
   exportable() {
     this.refresh()
     return {
       version: this.doc.version,
+      exportedAt: new Date().toISOString(),
       settings: this.doc.settings,
       providers: this.doc.providers.map((provider) => ({ ...provider, apiKey: '' })),
+      usage: this.doc.usage,
+      approvals: this.doc.approvals,
     }
   }
 

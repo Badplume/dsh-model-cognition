@@ -182,7 +182,14 @@ Skills the agent loads on its own when the situation matches.
 | `~/.dsh/.credentials.yaml` | the same file on a default install |
 
 A corrupt store is renamed `store.json.corrupt-<timestamp>` rather than deleted,
-and the plugin starts from defaults.
+and the plugin starts from defaults. A store that exists but cannot be read is
+**not** treated as absent: the plugin refuses to start rather than seed an empty
+document over providers you still have.
+
+The store file is shared by every Harness process on the machine — the Desktop
+app and a `dsh web` session can both be open. Each process re-reads the document
+before it writes, so a save in one window cannot delete a provider added in the
+other.
 
 `GET /model-cognition/export` returns everything except keys, for a backup.
 
@@ -203,8 +210,9 @@ and the plugin starts from defaults.
 ## Development
 
 ```bash
-node test/self-test.mjs      # 98 checks: store, tools, budget, skills, HTTP surface
-node test/client-render.mjs  # 120 checks: every settings screen, rendered with real React
+node test/self-test.mjs       # 157 checks: store, tools, budget, skills, HTTP surface
+node test/client-render.mjs   # 123 checks: every settings screen, rendered with real React
+node test/runtime-contract.mjs # 31 checks against the real DSH tool registry
 ```
 
 The host suite spins up a mock OpenAI-compatible vendor and drives the real
@@ -215,6 +223,30 @@ mounts the panel with `react-dom/server`, which needs React from somewhere:
 mkdir scratch && cd scratch && pnpm add react@18 react-dom@18
 MC_TEST_MODULES=/path/to/scratch node test/client-render.mjs
 ```
+
+The contract suite is the one that catches a silent failure. The DSH tool
+registry enforces a JSON Schema subset on every schema a definition carries, and
+a plugin that violates it loses the tool without an error the user ever sees.
+Reading that checker is not the same as running it, so given a DSH tree this
+suite imports the genuine module and runs the genuine `assertSupportedJsonSchema`
+over every schema this plugin ships:
+
+```bash
+DSH_TOOLS_ENTRY=/path/to/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js \
+  node test/runtime-contract.mjs
+```
+
+Without it the suite skips with a success exit code, so the checkout stays
+dependency-free for everyone else. Both the client and contract suites skip
+rather than fail when their input is missing.
+
+### What has been verified against a running Harness
+
+Beyond the suites, this plugin has been driven end to end in a real DSH
+profile — the settings panel rendered inside the Settings overlay, a provider
+saved from it, and an agent turn that called `model_ask` against a mock
+OpenAI-compatible vendor and booked the call in the usage ledger (128 prompt
+tokens, 96 completion tokens, $0.000076 priced from the provider's own rates).
 
 ## Compatibility
 

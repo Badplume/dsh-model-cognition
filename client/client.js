@@ -593,7 +593,7 @@ window.__ModuleLoader__.load({
     }
 
     /** One provider's card: a summary row, and the editor when it is open. */
-    function ProviderCard({ provider, t, expanded, onToggle, onEdit, onDelete, onToggleEnabled, busy }) {
+    function ProviderCard({ provider, t, expanded, onToggle, onEdit, onDelete, onToggleEnabled, onSaved, busy }) {
       const tone = provider.enabled === false
         ? undefined
         : provider.keyConfigured ? 'ok' : 'warn'
@@ -623,7 +623,7 @@ window.__ModuleLoader__.load({
           }),
           h(Button, { onClick: () => onToggle(provider.id) }, expanded ? t('common.close') : t('common.edit')),
           h(Button, { kind: 'danger', disabled: busy, onClick: () => onDelete(provider) }, t('common.delete'))),
-        expanded ? h(ProviderEditor, { provider, t, onDone: onToggle }) : null)
+        expanded ? h(ProviderEditor, { provider, t, onDone: onToggle, onSaved }) : null)
     }
 
     /** One model row inside the editor. */
@@ -661,7 +661,7 @@ window.__ModuleLoader__.load({
      * provider — the host never sends key bytes back, so "empty" means "keep"
      * and a separate action clears it.
      */
-    function ProviderEditor({ provider, t, onDone }) {
+    function ProviderEditor({ provider, t, onDone, onSaved }) {
       const isNew = provider.__new === true
       const [draft, setDraft] = React.useState(() => ({
         id: provider.id ?? '',
@@ -689,6 +689,16 @@ window.__ModuleLoader__.load({
       const [discovered, setDiscovered] = React.useState(null)
 
       const patch = (fields) => setDraft((current) => ({ ...current, ...fields }))
+
+      /**
+       * Leave the editor after a write. The parent owns the list state, so it
+       * has to re-read: collapsing without a reload leaves a saved provider
+       * invisible until the whole page is refreshed.
+       */
+      function close() {
+        if (onSaved) onSaved()
+        else if (onDone) onDone()
+      }
 
       const keyState = provider.keyless
         ? t('providers.keyless')
@@ -743,7 +753,7 @@ window.__ModuleLoader__.load({
         try {
           await api('/providers', { method: 'POST', body: { provider: composed(), apiKey } })
           setNotice({ tone: 'ok', text: t('editor.saved') })
-          if (onDone) onDone()
+          close()
         } catch (error) {
           setNotice({ tone: 'err', text: error.message })
         } finally {
@@ -778,7 +788,7 @@ window.__ModuleLoader__.load({
           await api(`/providers/${encodeURIComponent(provider.id)}/key`, { method: 'PUT', body: { apiKey: '' } })
           setApiKey('')
           setNotice({ tone: 'ok', text: t('editor.keyClearDone') })
-          if (onDone) onDone()
+          close()
         } catch (error) {
           setNotice({ tone: 'err', text: error.message })
         } finally {
@@ -991,6 +1001,7 @@ window.__ModuleLoader__.load({
             provider: { __new: true, __presets: state.presets, keyMode: 'record', protocol: 'openai', models: [] },
             t,
             onDone: () => setDraftNew(false),
+            onSaved: async () => { setDraftNew(false); await reload() },
           })) : null,
 
         providers.map((provider) => (confirmId === provider.id
@@ -1011,6 +1022,7 @@ window.__ModuleLoader__.load({
             onToggle: (id) => setOpenId(openId === id ? null : id),
             onDelete: (row) => setConfirmId(row.id),
             onToggleEnabled: setEnabled,
+            onSaved: async () => { setOpenId(null); await reload() },
           }))))
     }
 

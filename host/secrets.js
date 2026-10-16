@@ -35,9 +35,25 @@ function service(ctx) {
   return credentials !== undefined && credentials !== null ? credentials : undefined
 }
 
-/** The payload shape this plugin writes into its own records. */
-function payloadValue(record) {
-  const value = record?.payload?.value
+/**
+ * The value inside a record this plugin owns.
+ *
+ * The record shape is not ours to invent. The local credential provider admits
+ * exactly two tags, and an `api-key` record may carry only `kind`, `key` and
+ * `env` — the secret *is* the `key` field. A record with any other field is
+ * refused when the document is next parsed, which fails the required
+ * `credentials` plugin and stops the whole host from starting, so a wrong shape
+ * here is not a cosmetic bug.
+ *
+ * @see dsh-credentials-local/lib/index.js — `parseRecord`, which rejects an
+ *      unknown field, and `modifyRecord`, which does *not* check the field set
+ *      on the way in: a bad record is written happily and only explodes at the
+ *      next boot. `test/self-test.mjs` mirrors the parser so we cannot repeat it.
+ */
+function recordValue(record) {
+  if (record === undefined || record === null) return undefined
+  if (record.kind !== undefined && record.kind !== 'api-key') return undefined
+  const value = record.key ?? record.payload?.value
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
@@ -63,7 +79,7 @@ export async function readProviderKey(ctx, provider) {
     return provider.apiKey !== '' ? provider.apiKey : undefined
   }
   const record = await credentials.readRecord(providerKeyRef(provider.id))
-  return payloadValue(record)
+  return recordValue(record)
 }
 
 /**
@@ -84,7 +100,7 @@ export async function writeProviderKey(ctx, providerId, value) {
     await credentials.deleteRecord(key)
     return { mode: 'record' }
   }
-  await credentials.modifyRecord(key, async () => ({ kind: 'api-key', payload: { value } }))
+  await credentials.modifyRecord(key, async () => ({ kind: 'api-key', key: value }))
   return { mode: 'record' }
 }
 

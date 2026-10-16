@@ -146,20 +146,48 @@ async function pooled(items, limit, worker) {
   return results
 }
 
-/** The common `model`/`prompt`/`system` parameter block. */
-function askParameters({ modelRequired }) {
+/**
+ * Assemble a JSON Schema object node.
+ *
+ * A tool registered as a plain object must already carry JSON Schema in
+ * `parameters`: unlike `defineTool`, the registry never runs
+ * `parameterSchemaSpecToJsonSchema` over it, so a property map like
+ * `{ prompt: { type: 'string', required: true } }` would reach the model as an
+ * object with no `type` and no `properties`, and the model would see no
+ * arguments at all. The runtime enforces a subset (`checkSchemaNode` in
+ * `@deepseek-ai/dsh-tools`): one scalar `type` per node plus
+ * `properties`/`required`/`additionalProperties`/`items`/`enum`/`const`.
+ * The installed `dsh-github-connect` plugin uses this exact shape.
+ *
+ * @param properties - the JSON Schema of each argument.
+ * @param required - names that must be present.
+ * @returns a JSON Schema object node.
+ */
+function objectSchema(properties, required = []) {
   return {
-    model: {
-      type: 'string',
-      required: modelRequired,
-      description: '模型引用，格式 providerId/modelId（例如 deepseek/deepseek-chat）。'
-        + '省略时使用设置里的默认模型；若只写模型 id 且只有一个供应商提供它，也会自动匹配。',
+    type: 'object',
+    additionalProperties: false,
+    properties,
+    ...required.length > 0 ? { required } : {},
+  }
+}
+
+/** The common `model`/`prompt`/`system` argument block. */
+function askFields({ modelRequired }) {
+  return {
+    properties: {
+      model: {
+        type: 'string',
+        description: '模型引用，格式 providerId/modelId（例如 deepseek/deepseek-chat）。'
+          + '省略时使用设置里的默认模型；若只写模型 id 且只有一个供应商提供它，也会自动匹配。',
+      },
+      prompt: { type: 'string', description: '要问这个模型的问题或指令。' },
+      system: { type: 'string', description: '可选的 system 提示，用来固定该模型的角色或输出格式。' },
+      temperature: { type: 'number', description: '可选的采样温度，覆盖设置里的默认值。' },
+      maxTokens: { type: 'number', description: '可选的回复长度上限，覆盖设置里的默认值。' },
+      purpose: { type: 'string', description: '可选的一句话用途说明，会记录进用量账本，便于复盘花费。' },
     },
-    prompt: { type: 'string', required: true, description: '要问这个模型的问题或指令。' },
-    system: { type: 'string', description: '可选的 system 提示，用来固定该模型的角色或输出格式。' },
-    temperature: { type: 'number', description: '可选的采样温度，覆盖设置里的默认值。' },
-    maxTokens: { type: 'number', description: '可选的回复长度上限，覆盖设置里的默认值。' },
-    purpose: { type: 'string', description: '可选的一句话用途说明，会记录进用量账本，便于复盘花费。' },
+    required: modelRequired ? ['model', 'prompt'] : ['prompt'],
   }
 }
 
@@ -175,7 +203,7 @@ export function buildTools(ctx, store) {
     name: 'model_list',
     description: '列出本机 Model Cognition 已配置的供应商、模型与预算设置。'
       + '在调用其他模型之前先用它确认可用的模型 id，以及单次/每日花费上限。',
-    parameters: {},
+    parameters: objectSchema({}),
     output: {
       schema: {
         type: 'object',
@@ -198,7 +226,11 @@ export function buildTools(ctx, store) {
       },
     },
     timeoutMs: 30_000,
-    isConcurrencySafe: true,
+    // The runtime calls this as a function (`tool.isConcurrencySafe(args)`); a
+    // bare boolean would throw inside its `try` and silently fall back to
+    // exclusive. Reading the catalogue touches nothing shared, so it may run
+    // beside another tool.
+    isConcurrencySafe: () => true,
     async execute() {
       const providers = []
       for (const provider of store.providers) {
@@ -237,13 +269,16 @@ export function buildTools(ctx, store) {
       + `当前预算：${settingsLine(store)}。`
       + '超过自动放行阈值的调用不会立刻发出，而是返回 pending_approval 与 approvalId，'
       + '需要用户在设置面板批准后用同样的 model 与 prompt 带上 approvalId 重试。',
-    parameters: {
-      ...askParameters({ modelRequired: false }),
-      approvalId: {
-        type: 'string',
-        description: '上一次返回 pending_approval 时的 approvalId；用户批准后带上它重试同一次调用。',
-      },
-    },
+    parameters: (() => {
+      const fields = askFields({ modelRequired: false })
+      return objectSchema({
+        ...fields.properties,
+        approvalId: {
+          type: 'string',
+          description: '上一次返回 pending_approval 时的 approvalId；用户批准后带上它重试同一次调用。',
+        },
+      }, fields.required)
+    })(),
     output: {
       // The output schema is advisory, so it deliberately omits
       // `additionalProperties: false`: the value carries provider diagnostics
@@ -279,7 +314,10 @@ export function buildTools(ctx, store) {
       },
     },
     timeoutMs: TOOL_TIMEOUT_MS,
-    isConcurrencySafe: true,
+    // Spending money and appending to the shared usage ledger are not
+    // reentrant: two of these must not interleave their read-modify-write of
+    // the store, so the runtime serializes them.
+    isConcurrencySafe: () => false,
     async execute(args, exec) {
       const planned = plan(store, {
         ref: args.model,
@@ -307,19 +345,18 @@ export function buildTools(ctx, store) {
     description: '把同一个问题并行发给多个模型，分别返回它们的答复，便于比较不同模型的看法。'
       + `当前可用：${configuredSummary(store)}。`
       + '并发数跟随后台设置；任何一个模型失败都不影响其它模型的结果。',
-    parameters: {
+    parameters: objectSchema({
       models: {
         type: 'array',
-        required: true,
         description: '要咨询的模型列表，每项为 providerId/modelId。',
         items: { type: 'string' },
       },
-      prompt: { type: 'string', required: true, description: '同时发给所有模型的问题或指令。' },
+      prompt: { type: 'string', description: '同时发给所有模型的问题或指令。' },
       system: { type: 'string', description: '可选的 system 提示，对所有模型生效。' },
       temperature: { type: 'number', description: '可选的采样温度，对所有模型生效。' },
       maxTokens: { type: 'number', description: '可选的回复长度上限，对所有模型生效。' },
       purpose: { type: 'string', description: '可选的一句话用途说明，会记录进用量账本。' },
-    },
+    }, ['models', 'prompt']),
     output: {
       schema: {
         type: 'object',
@@ -343,7 +380,9 @@ export function buildTools(ctx, store) {
       },
     },
     timeoutMs: TOOL_TIMEOUT_MS,
-    isConcurrencySafe: true,
+    // One panel call already fans out over its own pool, and every member
+    // books into the shared ledger; keep whole panels from overlapping.
+    isConcurrencySafe: () => false,
     async execute(args, exec) {
       const requested = Array.isArray(args.models) ? args.models.filter((id) => typeof id === 'string' && id.trim() !== '') : []
       if (requested.length === 0) throw new Error('models 不能为空')
@@ -390,10 +429,10 @@ export function buildTools(ctx, store) {
     name: 'model_usage',
     description: '查看本插件的用量与花费账本：每次调用的模型、token、耗时、成本，以及今日合计。'
       + '想知道自己刚才花了多少、或预算还剩多少时用它。',
-    parameters: {
+    parameters: objectSchema({
       limit: { type: 'number', description: '返回最近多少条记录，默认 20，最大 200。' },
       onlyFailures: { type: 'boolean', description: '只看失败的调用。' },
-    },
+    }),
     output: {
       schema: {
         type: 'object',
@@ -431,7 +470,7 @@ export function buildTools(ctx, store) {
       },
     },
     timeoutMs: 30_000,
-    isConcurrencySafe: true,
+    isConcurrencySafe: () => true,
     async execute(args) {
       const limit = Math.max(1, Math.min(Math.trunc(Number(args.limit)) || 20, 200))
       const records = store.doc.usage.records.filter((record) => args.onlyFailures !== true || !record.ok)

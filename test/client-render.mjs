@@ -21,10 +21,27 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const clientPath = join(here, '..', 'client', 'client.js')
 
-const modulesDir = process.env.MC_TEST_MODULES ?? 'D:/emmm/GoworkDeepseek/_clienttest'
-const requireFrom = createRequire(pathToFileURL(join(modulesDir, 'package.json')).href)
-const React = requireFrom('react')
-const { renderToStaticMarkup } = requireFrom('react-dom/server')
+const modulesDir = process.env.MC_TEST_MODULES ?? join(here, '..', '..', '_clienttest')
+
+/** Resolve React from the scratch install, or explain how to make one. */
+function loadReact() {
+  let requireFrom
+  try {
+    requireFrom = createRequire(pathToFileURL(join(modulesDir, 'package.json')).href)
+    return { React: requireFrom('react'), renderToStaticMarkup: requireFrom('react-dom/server').renderToStaticMarkup }
+  } catch (error) {
+    process.stdout.write(
+      'client-render: SKIP — React is not installed next to this checkout\n'
+      + `  looked in ${modulesDir} (${error.code ?? error.message})\n`
+      + '  create one and point MC_TEST_MODULES at it:\n'
+      + '    mkdir scratch && cd scratch && pnpm add react@18 react-dom@18\n'
+      + '    MC_TEST_MODULES=/path/to/scratch node test/client-render.mjs\n',
+    )
+    process.exit(0)
+  }
+}
+
+const { React, renderToStaticMarkup } = loadReact()
 
 let passed = 0
 let failed = 0
@@ -400,6 +417,24 @@ check('parsePrice reads blank as unpriced', T.parsePrice('') === null && T.parse
 check('parsePrice reads a number', T.parsePrice('1.25') === 1.25)
 check('parsePrice rejects nonsense', T.parsePrice('abc') === null && T.parsePrice('-3') === null)
 check('the route prefix is absolute at the root', T.PREFIX === '/model-cognition', T.PREFIX)
+
+section('wiring')
+// The editor does not own the list, so collapsing it after a write must be
+// paired with a re-read — otherwise a saved provider stays invisible until the
+// whole page is refreshed.
+const source = readFileSync(clientPath, 'utf8')
+check(
+  'the editor hands a successful save back to its parent',
+  source.includes('if (onSaved) onSaved()'),
+)
+check(
+  'a newly saved provider reloads the list',
+  source.includes('onSaved: async () => { setDraftNew(false); await reload() }'),
+)
+check(
+  'an edited provider reloads the list',
+  source.includes('onSaved: async () => { setOpenId(null); await reload() }'),
+)
 
 process.stdout.write(`\n${passed}/${passed + failed} checks passed\n`)
 process.exit(failed === 0 ? 0 : 1)

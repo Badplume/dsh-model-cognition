@@ -166,7 +166,9 @@ agent 在情况匹配时自己加载。
 | `$DSH_HOME/.credentials.yaml` → `records` | 各供应商的 API Key，键名 `dsh-model-cognition/<providerId>` |
 | `~/.dsh/.credentials.yaml` | 默认安装下的同一个文件 |
 
-数据文件损坏时会被改名成 `store.json.corrupt-<时间戳>` 而不是删掉，插件从默认值启动。
+数据文件损坏时会被改名成 `store.json.corrupt-<时间戳>` 而不是删掉，插件从默认值启动。数据文件**存在但读不出来**时不按「不存在」处理：插件会拒绝启动，而不是用一个空文档盖掉你仍然拥有的供应商。
+
+数据文件是全机所有 Harness 进程共用的——桌面端和 `dsh web` 会话可以同时开着。每个进程在写入前都会重新读取文档，所以一个窗口里的保存不会删掉另一个窗口里刚添加的供应商。
 
 `GET /model-cognition/export` 返回除密钥以外的全部内容，可用于备份。
 
@@ -184,8 +186,9 @@ agent 在情况匹配时自己加载。
 ## 开发
 
 ```bash
-node test/self-test.mjs      # 98 项：存储、工具、预算、skill、HTTP 面
-node test/client-render.mjs  # 120 项：每一个设置界面，用真实 React 渲染
+node test/self-test.mjs        # 157 项：存储、工具、预算、skill、HTTP 面
+node test/client-render.mjs    # 123 项：每一个设置界面，用真实 React 渲染
+node test/runtime-contract.mjs # 31 项：对着真实的 DSH 工具注册表校验
 ```
 
 宿主测试会起一个假的 OpenAI 兼容端点，拿真的工具和路由去打它 —— 不联网、不需要 DSH、
@@ -195,6 +198,26 @@ node test/client-render.mjs  # 120 项：每一个设置界面，用真实 React
 mkdir scratch && cd scratch && pnpm add react@18 react-dom@18
 MC_TEST_MODULES=/path/to/scratch node test/client-render.mjs
 ```
+
+契约测试专门用来抓那种「一声不响的失效」。DSH 的工具注册表对每份 schema 都强制一个
+JSON Schema 子集，违反的插件会丢掉那个工具，而用户看不到任何报错。读那段校验代码不等于
+跑过它，所以只要给出一棵 DSH 目录树，这个测试就会导入真正的模块，用真正的
+`assertSupportedJsonSchema` 把本插件发布的每一份 schema 跑一遍：
+
+```bash
+DSH_TOOLS_ENTRY=/path/to/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js \
+  node test/runtime-contract.mjs
+```
+
+没有它时测试以成功退出码跳过，这样检出本仓库的人依旧零依赖。客户端与契约测试在缺少输入时
+都是跳过而不是失败。
+
+### 已经在真实 Harness 里验证过什么
+
+除了上面这些测试，本插件还在一个真实的 DSH profile 里端到端跑通过：设置面板在「设置」浮层
+里渲染出来，从面板保存了供应商，并且有一轮真实的 agent 对话调用了 `model_ask` 打到一个假的
+OpenAI 兼容端点，调用被记进了用量账本（128 输入 token、96 输出 token、按供应商自己的
+价格算出 $0.000076）。
 
 ## 兼容性
 

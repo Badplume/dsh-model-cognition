@@ -63,7 +63,9 @@
     }
   },
   "scripts": {
-    "test": "node test/self-test.mjs",
-    "test:client": "node test/client-render.mjs"
+    "test": "node test/self-test.mjs && node test/client-render.mjs && node test/runtime-contract.mjs",
+    "test:host": "node test/self-test.mjs",
+    "test:client": "node test/client-render.mjs",
+    "test:contract": "node test/runtime-contract.mjs"
   }
 }

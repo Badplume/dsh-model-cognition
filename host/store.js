@@ -175,25 +175,50 @@ export function emptyStore(seed = {}) {
   }
 }
 
-/** Read the document, or an empty one when it is absent or unreadable. */
-function readStore(path) {
+/**
+ * Read the document, keeping "absent" distinct from "unreadable".
+ *
+ * The distinction is the whole safety property of this file. An absent
+ * document is a fresh install and may be seeded; an unreadable one (a lock, a
+ * permission fault, a half-visible network path) must never be treated as
+ * absent, because the caller would then write a fresh empty document over a
+ * provider list the user still has.
+ *
+ * @param path - the store document.
+ * @returns `{ kind: 'ok', raw }`, `{ kind: 'missing' }`, `{ kind: 'corrupt' }`
+ *          or `{ kind: 'unreadable', error }`.
+ */
+function readDocument(path) {
   let text
   try {
     text = readFileSync(path, 'utf8')
-  } catch {
-    return null
+  } catch (error) {
+    return error?.code === 'ENOENT' ? { kind: 'missing' } : { kind: 'unreadable', error }
   }
   try {
     const parsed = JSON.parse(text)
-    return parsed !== null && typeof parsed === 'object' ? parsed : null
+    if (parsed === null || typeof parsed !== 'object') return { kind: 'corrupt' }
+    return { kind: 'ok', raw: parsed }
   } catch {
-    // A corrupt document is kept beside the fresh one instead of deleted: the
-    // user's provider list is worth more than the bytes a doc write would save.
-    try {
-      renameSync(path, `${path}.corrupt-${Date.now()}`)
-    } catch { /* the backup is best-effort; the fresh document still lands */ }
+    return { kind: 'corrupt' }
+  }
+}
+
+/** A change token for the document, so a re-read can be skipped when nothing moved. */
+function documentStamp(path) {
+  try {
+    const stats = statSync(path)
+    return `${stats.mtimeMs}:${stats.size}`
+  } catch {
     return null
   }
+}
+
+/** Move a corrupt document aside; the user's bytes outlive the fresh one. */
+function quarantine(path) {
+  try {
+    renameSync(path, `${path}.corrupt-${Date.now()}`)
+  } catch { /* the backup is best-effort; the fresh document still lands */ }
 }
 
 /** Fold a document of any older version forward. */
@@ -256,15 +281,53 @@ export class Store {
   /**
    * @param ctx - host plugin context, used only to resolve the Harness home.
    * @param seed - the row's Config, seeding a document that does not exist yet.
+   * @throws when the document exists but cannot be read, rather than seeding
+   *         over it — the caller reports the path and leaves the bytes alone.
    */
   constructor(ctx, seed = {}) {
     this.path = storePath(ctx)
     this.seed = seed
-    const raw = readStore(this.path)
-    this.doc = normalizeStore(raw, seed)
+    const read = readDocument(this.path)
+    if (read.kind === 'unreadable') {
+      const reason = read.error?.code ?? read.error?.message ?? 'unknown error'
+      throw new Error(
+        `cannot read ${this.path} (${reason}); refusing to start so an existing `
+        + 'store is not overwritten with an empty one',
+      )
+    }
+    if (read.kind === 'corrupt') quarantine(this.path)
+    this.doc = normalizeStore(read.kind === 'ok' ? read.raw : null, seed)
+    this.stamp = documentStamp(this.path)
     // A document that did not exist yet is written once, so the user can see and
     // back up a real file before they change anything.
-    if (raw === null) this.flush()
+    if (read.kind !== 'ok') this.flush()
+  }
+
+  /**
+   * Re-read the document when it moved on disk.
+   *
+   * The store file is shared by every Harness process on the machine — the
+   * desktop app and a `dsh web` session can both be open — and each one holds
+   * the whole document in memory. Writing that memory back wholesale is how a
+   * second process silently deletes the first one's providers, so every
+   * mutation re-reads first and every read notices an outside write.
+   *
+   * @param force - re-read even when the stamp is unchanged (used before a write).
+   * @returns the current document.
+   */
+  refresh(force = false) {
+    const stamp = documentStamp(this.path)
+    if (!force && stamp !== null && stamp === this.stamp) return this.doc
+    const read = readDocument(this.path)
+    if (read.kind === 'unreadable') {
+      // Keep what is in memory and write nothing: a blind flush here is exactly
+      // the overwrite this class exists to avoid.
+      return this.doc
+    }
+    if (read.kind === 'corrupt') return this.doc
+    this.doc = normalizeStore(read.kind === 'ok' ? read.raw : null, this.seed)
+    this.stamp = documentStamp(this.path)
+    return this.doc
   }
 
   /** Persist the document atomically. */
@@ -274,16 +337,19 @@ export class Store {
     const temp = `${this.path}.${process.pid}.tmp`
     writeFileSync(temp, body, { encoding: 'utf8', mode: 0o600 })
     renameSync(temp, this.path)
+    this.stamp = documentStamp(this.path)
     return this.doc
   }
 
   /** The current settings. */
   get settings() {
+    this.refresh()
     return this.doc.settings
   }
 
   /** Replace settings with a validated merge; returns the new settings. */
   updateSettings(patch) {
+    this.refresh(true)
     this.doc.settings = normalizeSettings({ ...this.doc.settings, ...patch })
     this.flush()
     return this.doc.settings
@@ -291,11 +357,13 @@ export class Store {
 
   /** Every provider row, in insertion order. */
   get providers() {
+    this.refresh()
     return this.doc.providers
   }
 
   /** One provider by id, or undefined. */
   provider(id) {
+    this.refresh()
     return this.doc.providers.find((entry) => entry.id === id)
   }
 
@@ -306,6 +374,7 @@ export class Store {
    * under the user's cursor when a field is saved.
    */
   putProvider(raw) {
+    this.refresh(true)
     const next = normalizeProvider({ ...raw, updatedAt: new Date().toISOString() })
     if (next === null) throw new Error('provider needs an id')
     const index = this.doc.providers.findIndex((entry) => entry.id === next.id)
@@ -322,6 +391,7 @@ export class Store {
 
   /** Remove one provider row; returns whether a row was removed. */
   removeProvider(id) {
+    this.refresh(true)
     const before = this.doc.providers.length
     this.doc.providers = this.doc.providers.filter((entry) => entry.id !== id)
     const removed = this.doc.providers.length !== before
@@ -331,6 +401,7 @@ export class Store {
 
   /** Append one usage record, trimming the ledger to its keep limit. */
   recordUsage(record) {
+    this.refresh(true)
     const next = normalizeUsageRecord(record)
     if (next === null) return
     this.doc.usage.records.push(next)
@@ -348,6 +419,7 @@ export class Store {
 
   /** Drop the ledger, keeping providers and settings. */
   resetUsage() {
+    this.refresh(true)
     this.doc.usage = { records: [], totals: { calls: 0, failed: 0, promptTokens: 0, completionTokens: 0, costUsd: 0 } }
     this.flush()
     return this.doc.usage
@@ -355,11 +427,13 @@ export class Store {
 
   /** Every approval row, oldest first. */
   get approvals() {
+    this.refresh()
     return this.doc.approvals
   }
 
   /** Approvals still waiting for the user, newest first. */
   pendingApprovals() {
+    this.refresh()
     return this.doc.approvals.filter((entry) => entry.status === 'pending').reverse()
   }
 
@@ -370,6 +444,7 @@ export class Store {
    *          request can be retried once the user decides.
    */
   addApproval(raw) {
+    this.refresh(true)
     const next = normalizeApproval({ ...raw, status: 'pending', createdAt: new Date().toISOString() })
     if (next === null) throw new Error('approval needs an id')
     this.doc.approvals.push(next)
@@ -382,12 +457,14 @@ export class Store {
 
   /** One approval by id. */
   approval(id) {
+    this.refresh()
     return this.doc.approvals.find((entry) => entry.id === id)
   }
 
   /** The user's decision, recorded with its timestamp. */
   decideApproval(id, status) {
-    const entry = this.approval(id)
+    this.refresh(true)
+    const entry = this.doc.approvals.find((candidate) => candidate.id === id)
     if (entry === undefined) return undefined
     if (entry.status !== 'pending') return entry
     entry.status = status === 'approved' ? 'approved' : 'denied'
@@ -415,14 +492,17 @@ export class Store {
 
   /** Mark a grant used, so one approval can never pay for two calls. */
   consumeApproval(id) {
-    const entry = this.approval(id)
+    this.refresh(true)
+    const entry = this.doc.approvals.find((candidate) => candidate.id === id)
     if (entry === undefined) return undefined
     entry.consumedAt = new Date().toISOString()
     this.flush()
     return entry
   }
 
-  /** Cost booked today, in USD, from the ledger's own timestamps. */  costToday(now = Date.now()) {
+  /** Cost booked today, in USD, from the ledger's own timestamps. */
+  costToday(now = Date.now()) {
+    this.refresh()
     const midnight = new Date(now)
     midnight.setHours(0, 0, 0, 0)
     const start = midnight.getTime()
@@ -434,6 +514,7 @@ export class Store {
 
   /** The document without secret bytes, for export and for the panel's state. */
   exportable() {
+    this.refresh()
     return {
       version: this.doc.version,
       settings: this.doc.settings,
